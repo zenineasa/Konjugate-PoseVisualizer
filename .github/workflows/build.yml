@@ -9,7 +9,7 @@ name: Build
 # src/packageArchive.mjs, so this is a plain Node job, not a native build matrix.
 on:
     push:
-        branches: [main]
+        branches: [master]
     pull_request:
     workflow_dispatch:
 
