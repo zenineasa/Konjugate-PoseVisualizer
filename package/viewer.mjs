@@ -1,6 +1,6 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
-import * as THREE from '../../node_modules/three/build/three.module.js';
+import * as THREE from './vendor/three.module.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 

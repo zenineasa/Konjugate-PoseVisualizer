@@ -1,0 +1,13 @@
+{
+  "name": "konjugate-posevisualizer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A Three.js 6-DOF pose visualizer add-on for Konjugate.",
+  "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+  "license": "MPL-2.0",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "install:dev": "node scripts/build.mjs && node scripts/installDev.mjs"
+  }
+}
