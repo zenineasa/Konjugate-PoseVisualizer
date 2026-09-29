@@ -10,7 +10,9 @@ const { createPackageArchive } = await import(pathToFileURL(konjugateModule('src
 const packageDirectory = join(repoRoot, 'package');
 const outputDirectory = join(repoRoot, 'out');
 
-const manifest = JSON.parse(await readFile(join(packageDirectory, 'addon.json'), 'utf8'));
+// package.json is the single source of the version, so release tags always match the package.
+const { version } = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
+const manifest = { ...JSON.parse(await readFile(join(packageDirectory, 'addon.json'), 'utf8')), version };
 const files = {};
 // Recurses into package/vendor/ (the vendored three.js copy -- see THIRD-PARTY-NOTICES.md) as well
 // as the top-level files, since a package's files map is flat by relative path.
