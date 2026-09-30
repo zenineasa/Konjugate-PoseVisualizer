@@ -41,6 +41,9 @@ jobs:
             - name: Install Konjugate core's dependencies
               working-directory: konjugate
               run: npm ci
+            - name: Run tests
+              working-directory: konjugate-posevisualizer
+              run: npm test
             - name: Build the add-on
               working-directory: konjugate-posevisualizer
               run: npm run build

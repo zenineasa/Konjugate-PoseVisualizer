@@ -40,6 +40,13 @@ jobs:
             - name: Install Konjugate core's dependencies
               working-directory: konjugate
               run: npm ci
+            # Builds the add-on itself and statically checks every relative import/script/stylesheet
+            # reference in the built archive resolves to a file actually inside it -- this is what
+            # would have caught three.module.js's own import of three.core.js silently breaking when
+            # only three.module.js got vendored (see tests/archiveImports.test.mjs).
+            - name: Run tests
+              working-directory: konjugate-posevisualizer
+              run: npm test
             - name: Build the add-on
               working-directory: konjugate-posevisualizer
               run: npm run build
