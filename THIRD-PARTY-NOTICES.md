@@ -6,7 +6,7 @@ This add-on vendors the following third-party software, unmodified, in `package/
 
 ## three.js
 
-`package/vendor/three.module.js`, from the [three.js](https://threejs.org/) project.
+`package/vendor/three.module.js` and `package/vendor/three.core.js` (which `three.module.js` imports), from the [three.js](https://threejs.org/) project.
 
 The MIT License
 
