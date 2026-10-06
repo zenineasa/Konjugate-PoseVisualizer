@@ -2,15 +2,13 @@
 
 name: Build
 
-# Cheap, broad verification -- every push and PR gets an unsigned build, proving the code and
-# packaging still work. Mirrors Konjugate core's crossPlatform.yml/release.yml split: this is the
+# An unsigned build, run only by hand (Actions > Build > Run workflow), proving the code and
+# packaging still work. Nothing builds on an ordinary push: only a version tag does (release.yml).
+# Mirrors Konjugate core's crossPlatform.yml/release.yml split: this is the
 # crossPlatform.yml role (build, no signing, no publish); release.yml is the tag-triggered signed-
 # release counterpart. scripts/build.mjs only imports Konjugate core's pure-JS
 # src/packageArchive.mjs, so this is a plain Node job, not a native build matrix.
 on:
-    push:
-        branches: [master]
-    pull_request:
     workflow_dispatch:
 
 jobs:
@@ -51,7 +49,7 @@ jobs:
               working-directory: konjugate-posevisualizer
               run: npm run build
             # Deliberately unsigned: signing is release.yml's job, gated to an actual version tag,
-            # not something every push/PR build should do.
+            # not something this verification build should do.
             - name: Upload build artifact
               uses: actions/upload-artifact@v4
               with:
