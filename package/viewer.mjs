@@ -1,8 +1,12 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
 import * as THREE from './vendor/three.module.js';
+import {
+    activeFace, faceDirections, fitOrbit, interpolateOrbit, orbitAnglesFor, panOffset, transitionMilliseconds, zoomedRadius
+} from './viewCamera.mjs';
 
 const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 // A node counts as a renderable body if it has states named exactly these six symbols --
 // Konjugate's own canonical vocabulary for pose (see the component library's Free body
@@ -53,6 +57,7 @@ updateCameraFromOrbit();
 let dragging = false;
 let lastPointer = { x: 0, y: 0 };
 canvas.addEventListener('pointerdown', (event) => {
+    cameraAnimation = null;
     dragging = true;
     lastPointer = { x: event.clientX, y: event.clientY };
     canvas.setPointerCapture(event.pointerId);
@@ -67,9 +72,100 @@ canvas.addEventListener('pointermove', (event) => {
 });
 canvas.addEventListener('wheel', (event) => {
     event.preventDefault();
+    cameraAnimation = null;
     orbit.radius = THREE.MathUtils.clamp(orbit.radius * (1 + Math.sign(event.deltaY) * 0.1), 0.5, 200);
     updateCameraFromOrbit();
 }, { passive: false });
+
+// --- View cube -----------------------------------------------------------------------------
+//
+// The same widget as in Konjugate's editor: faces and corners turn the view, the pad pans it, and
+// Fit frames the bodies being shown (viewCamera.mjs has the maths). Turning keeps the current target
+// and distance; only Fit changes what the view is centred on.
+let cameraAnimation = null;
+
+function animateOrbitTo(destination) {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        cameraAnimation = null;
+        Object.assign(orbit, { azimuth: destination.azimuth, polar: destination.polar, radius: destination.radius });
+        orbit.target.copy(destination.target);
+        updateCameraFromOrbit();
+        return;
+    }
+    cameraAnimation = {
+        startedAt: performance.now(),
+        from: { azimuth: orbit.azimuth, polar: orbit.polar, radius: orbit.radius, target: orbit.target.clone() },
+        to: destination
+    };
+}
+
+function stepCameraAnimation(time) {
+    if (!cameraAnimation) return;
+    const progress = Math.min(1, (time - cameraAnimation.startedAt) / transitionMilliseconds);
+    const frame = interpolateOrbit(cameraAnimation.from, cameraAnimation.to, progress);
+    Object.assign(orbit, { azimuth: frame.azimuth, polar: frame.polar, radius: frame.radius });
+    orbit.target.copy(frame.target);
+    updateCameraFromOrbit();
+    if (progress === 1) cameraAnimation = null;
+}
+
+function turnTo(direction) {
+    animateOrbitTo({ ...orbitAnglesFor(direction), radius: orbit.radius, target: orbit.target.clone() });
+}
+
+function bodyBounds() {
+    const bounds = new THREE.Box3();
+    bodies.forEach((body) => {
+        if (body.object3D?.visible) bounds.expandByObject(body.object3D);
+    });
+    return bounds;
+}
+
+function fitView() {
+    const fit = fitOrbit(bodyBounds(), camera.fov, camera.aspect);
+    if (!fit) return;
+    animateOrbitTo({ azimuth: orbit.azimuth, polar: orbit.polar, radius: fit.radius, target: fit.target });
+}
+
+$$('[data-nav-view]').forEach((button) => button.addEventListener('click', () => turnTo(faceDirections[button.dataset.navView])));
+$$('[data-nav-corner]').forEach((button) => button.addEventListener('click', () => {
+    turnTo(new THREE.Vector3(...button.dataset.navCorner.split(',').map(Number)));
+}));
+$('[data-nav-action="fit"]').addEventListener('click', fitView);
+$('[data-nav-action="zoomIn"]').addEventListener('click', () => {
+    cameraAnimation = null;
+    orbit.radius = zoomedRadius(orbit.radius, 'in');
+    updateCameraFromOrbit();
+});
+$('[data-nav-action="zoomOut"]').addEventListener('click', () => {
+    cameraAnimation = null;
+    orbit.radius = zoomedRadius(orbit.radius, 'out');
+    updateCameraFromOrbit();
+});
+$$('[data-nav-pan]').forEach((button) => button.addEventListener('click', () => {
+    cameraAnimation = null;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    orbit.target.add(panOffset({
+        direction: button.dataset.navPan,
+        radius: orbit.radius,
+        verticalFovDegrees: camera.fov,
+        viewportHeight: rect.height,
+        right: new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0),
+        up: new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1)
+    }));
+    updateCameraFromOrbit();
+}));
+
+// Spins the cube to show the world from where the camera is, and lights the face it looks straight at.
+function updateViewCube() {
+    const worldRotation = new THREE.Matrix4().makeRotationFromQuaternion(camera.quaternion.clone().invert());
+    const flipCssY = new THREE.Matrix4().makeScale(1, -1, 1);
+    const cssRotation = flipCssY.clone().multiply(worldRotation).multiply(flipCssY);
+    $('#viewCubeObject').style.transform = `matrix3d(${cssRotation.elements.join(',')})`;
+    const facing = activeFace(camera.position.clone().sub(orbit.target));
+    $$('.cubeFace').forEach((face) => face.classList.toggle('active', face.dataset.navView === facing));
+}
+
 
 scene.add(new THREE.HemisphereLight('#cfe8ff', '#0a1018', 1.15));
 const keyLight = new THREE.DirectionalLight('#ffffff', 0.85);
@@ -92,6 +188,8 @@ resize();
 
 function animate() {
     requestAnimationFrame(animate);
+    stepCameraAnimation(performance.now());
+    updateViewCube();
     refreshEdgeLabelPositions();
     renderer.render(scene, camera);
 }

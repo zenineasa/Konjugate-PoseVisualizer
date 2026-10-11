@@ -20,6 +20,37 @@
             <canvas id="scene"></canvas>
             <div id="edgeLabels"></div>
             <div id="emptyScene"><strong>No 6-DOF bodies found</strong><span>This visualizer looks for nodes with x, y, z, roll, pitch and yaw states, named exactly that, on the same node.</span></div>
+            <div id="viewCube" class="viewCube" aria-label="3D view cube">
+                <div class="panPad" aria-label="Camera pan controls">
+                    <button class="panUp" data-nav-pan="up" type="button" aria-label="Pan camera up"><span aria-hidden="true"></span></button>
+                    <button class="panLeft" data-nav-pan="left" type="button" aria-label="Pan camera left"><span aria-hidden="true"></span></button>
+                    <button class="panRight" data-nav-pan="right" type="button" aria-label="Pan camera right"><span aria-hidden="true"></span></button>
+                    <button class="panDown" data-nav-pan="down" type="button" aria-label="Pan camera down"><span aria-hidden="true"></span></button>
+                </div>
+                <div class="viewCubeScene">
+                    <div id="viewCubeObject" class="viewCubeObject">
+                        <button class="cubeFace cubeFront" data-nav-view="front" type="button">Front</button>
+                        <button class="cubeFace cubeBack" data-nav-view="back" type="button">Back</button>
+                        <button class="cubeFace cubeRight" data-nav-view="right" type="button">Right</button>
+                        <button class="cubeFace cubeLeft" data-nav-view="left" type="button">Left</button>
+                        <button class="cubeFace cubeTop" data-nav-view="top" type="button">Top</button>
+                        <button class="cubeFace cubeBottom" data-nav-view="bottom" type="button">Bottom</button>
+                        <button class="cubeCorner cornerPPP" data-nav-corner="1,1,1" type="button" title="Isometric view"></button>
+                        <button class="cubeCorner cornerPPN" data-nav-corner="1,1,-1" type="button" title="Isometric view"></button>
+                        <button class="cubeCorner cornerPNP" data-nav-corner="1,-1,1" type="button" title="Isometric view"></button>
+                        <button class="cubeCorner cornerPNN" data-nav-corner="1,-1,-1" type="button" title="Isometric view"></button>
+                        <button class="cubeCorner cornerNPP" data-nav-corner="-1,1,1" type="button" title="Isometric view"></button>
+                        <button class="cubeCorner cornerNPN" data-nav-corner="-1,1,-1" type="button" title="Isometric view"></button>
+                        <button class="cubeCorner cornerNNP" data-nav-corner="-1,-1,1" type="button" title="Isometric view"></button>
+                        <button class="cubeCorner cornerNNN" data-nav-corner="-1,-1,-1" type="button" title="Isometric view"></button>
+                    </div>
+                </div>
+                <div class="viewNavActions" aria-label="Camera zoom controls">
+                    <button data-nav-action="zoomOut" type="button" aria-label="Zoom camera out" title="Zoom camera out">−</button>
+                    <button class="cubeFit" data-nav-action="fit" type="button" aria-label="Fit visible bodies" title="Fit visible bodies">⌗ Fit</button>
+                    <button data-nav-action="zoomIn" type="button" aria-label="Zoom camera in" title="Zoom camera in">＋</button>
+                </div>
+            </div>
         </section>
         <aside class="bodyList">
             <header><span>Detected bodies</span><strong>Pose Visualizer</strong></header>
