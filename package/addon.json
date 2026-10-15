@@ -12,8 +12,11 @@
         "timeline.read",
         "timeline.seek",
         "selection.read",
-        "simulation.status.read"
+        "simulation.status.read",
+        "project.data",
+        "settings.store"
     ],
+    "requires": ["projectData", "addonSettings"],
     "contributes": {
         "toolstrip": [{
             "commandId": "openPoseVisualizer",

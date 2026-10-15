@@ -19,7 +19,7 @@
         <section class="sceneWorkspace">
             <canvas id="scene"></canvas>
             <div id="edgeLabels"></div>
-            <div id="emptyScene"><strong>No 6-DOF bodies found</strong><span>This visualizer looks for nodes with x, y, z, roll, pitch and yaw states, named exactly that, on the same node.</span></div>
+            <div id="emptyScene"><strong>No bodies found</strong><span>No node in this result has states named as an active naming convention expects (by default x, y, z, roll, pitch and yaw). Add a body from the list on the right, or set up a convention for your own names.</span></div>
             <div id="viewCube" class="viewCube" aria-label="3D view cube">
                 <div class="panPad" aria-label="Camera pan controls">
                     <button class="panUp" data-nav-pan="up" type="button" aria-label="Pan camera up"><span aria-hidden="true"></span></button>
@@ -53,13 +53,32 @@
             </div>
         </section>
         <aside class="bodyList">
-            <header><span>Detected bodies</span><strong>Pose Visualizer</strong></header>
+            <header><span>Bodies</span><strong>Pose Visualizer</strong></header>
             <div class="viewOptions">
                 <label class="viewToggle"><input id="useEditorShapes" type="checkbox">Editor shapes, colors &amp; transforms</label>
                 <label class="viewToggle"><input id="showConnections" type="checkbox">Show connections</label>
             </div>
             <div id="bodies"></div>
-            <p id="noBodies" hidden>No node in this result has all six of x, y, z, roll, pitch and yaw as its own states.</p>
+            <p id="noBodies" hidden>No node in this result has states named as an active naming convention expects.</p>
+            <select id="addBody" aria-label="Make another node a body"></select>
+            <p id="configStatus" role="status"></p>
+            <details class="conventionPanel">
+                <summary>Naming conventions</summary>
+                <p class="panelNote">A node whose states have every name a ticked convention lists is shown as a body. Roles a convention leaves out stay still.</p>
+                <div id="conventions"></div>
+                <button id="newConvention" type="button">New convention</button>
+                <form id="conventionForm" hidden>
+                    <label class="formRow"><span>Name</span><input name="name" type="text" autocomplete="off" required></label>
+                    <label class="formRow"><span>X</span><input name="x" type="text" autocomplete="off" placeholder="not used"></label>
+                    <label class="formRow"><span>Y</span><input name="y" type="text" autocomplete="off" placeholder="not used"></label>
+                    <label class="formRow"><span>Z</span><input name="z" type="text" autocomplete="off" placeholder="not used"></label>
+                    <label class="formRow"><span>Roll</span><input name="roll" type="text" autocomplete="off" placeholder="not used"></label>
+                    <label class="formRow"><span>Pitch</span><input name="pitch" type="text" autocomplete="off" placeholder="not used"></label>
+                    <label class="formRow"><span>Yaw</span><input name="yaw" type="text" autocomplete="off" placeholder="not used"></label>
+                    <p id="conventionError" role="alert"></p>
+                    <div class="editorActions"><button type="submit">Save</button><button id="cancelConvention" type="button">Cancel</button></div>
+                </form>
+            </details>
         </aside>
     </main>
     <footer class="poseTimeline">

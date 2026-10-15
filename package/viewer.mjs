@@ -4,20 +4,31 @@ import * as THREE from './vendor/three.module.js';
 import {
     activeFace, faceDirections, fitOrbit, interpolateOrbit, orbitAnglesFor, panOffset, transitionMilliseconds, zoomedRadius
 } from './viewCamera.mjs';
+import {
+    activeConventions, allConventions, describeBody, matchConvention, modelBodyAxes, normalizeConvention,
+    normalizeProjectData, normalizeSettings, poseAt, poseRoles, resolveBodies, suggestedView
+} from './poseModel.mjs';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
-// A node counts as a renderable body if it has states named exactly these six symbols --
-// Konjugate's own canonical vocabulary for pose (see the component library's Free body
-// template). Auto-detected by name, the same "match by convention, not explicit wiring"
-// principle the component library's auto-bound edges already use -- this visualizer isn't
-// tied to Free body specifically, just to the naming convention.
-const requiredSymbols = ['x', 'y', 'z', 'roll', 'pitch', 'yaw'];
+const bridge = window.konjugateVisualizer;
 const bodyPalette = ['#42c9bc', '#e0a458', '#c084d8', '#6fa8dc', '#e07a7a', '#7ad48c', '#d8c05a', '#8f8fe0'];
 
 let context = null;
+let signals = [];
+let signalsById = new Map();
+// The user's naming conventions (kept for the user, in every project) and this project's own choices per node (kept
+// with the project): see poseModel.mjs.
+let settings = normalizeSettings(null);
+let projectData = normalizeProjectData(null);
 let bodies = [];
+// Nodes in the result that aren't bodies, which the user may make one.
+let otherNodes = [];
+// The body whose roles are open for editing in the sidebar, and the convention being written, if any.
+let editingEntityId = null;
+let conventionDraft = null;
+let viewSuggested = false;
 let hiddenBodyIds = new Set();
 let nodesById = new Map();
 let edgesForBodies = [];
@@ -210,43 +221,7 @@ function toThreeVector(modelXyz) {
     return new THREE.Vector3(x, z, -y);
 }
 
-// Body-to-world rotation matrix in MODEL space, for the same ZYX (yaw-pitch-roll intrinsic)
-// Euler convention already derived and used for this app's own kinematics content: R =
-// Rz(yaw)*Ry(pitch)*Rx(roll). Returns the body's own X/Y/Z axes as unit vectors expressed in
-// model world space (the columns of R), which toThreeVector then remaps individually -- this
-// avoids re-deriving an Euler-order conjugation by hand, and is why it's built as three
-// separate basis vectors rather than a single combined transform.
-function modelBodyAxes(roll, pitch, yaw) {
-    const cr = Math.cos(roll), sr = Math.sin(roll);
-    const cp = Math.cos(pitch), sp = Math.sin(pitch);
-    const cy = Math.cos(yaw), sy = Math.sin(yaw);
-    return {
-        bx: [cy * cp, sy * cp, -sp],
-        by: [cy * sp * sr - sy * cr, sy * sp * sr + cy * cr, cp * sr],
-        bz: [cy * sp * cr + sy * sr, sy * sp * cr - cy * sr, cp * cr]
-    };
-}
-
-// --- Body detection and construction --------------------------------------------------
-
-function detectBodies(signalList) {
-    const byEntity = Map.groupBy(signalList, (signal) => signal.entityId);
-    const detected = [];
-    let colorIndex = 0;
-    byEntity.forEach((items, entityId) => {
-        const bySymbol = Object.fromEntries(items.map((signal) => [signal.symbol, signal]));
-        if (!requiredSymbols.every((symbol) => bySymbol[symbol])) return;
-        detected.push({
-            entityId,
-            entityName: items[0].entityName,
-            color: bodyPalette[colorIndex++ % bodyPalette.length],
-            signalBySymbol: bySymbol,
-            series: {},
-            object3D: null
-        });
-    });
-    return detected;
-}
+// --- Body construction --------------------------------------------------------------
 
 // Editor-assigned appearance uses whatever units the model/CAD import happened to be authored
 // in -- a primitive sized for the main canvas's own layout scale, or an STL/STEP import in
@@ -345,7 +320,7 @@ $('#showConnections').addEventListener('change', (event) => {
 //
 // An edge only means "one equation reads/writes across these two nodes" -- not necessarily a
 // physical joint -- so this deliberately only draws a line when BOTH endpoints are themselves
-// detected 6-DOF bodies (never a partial/guessed connection), and always labels the line with
+// bodies (never a partial/guessed connection), and always labels the line with
 // the edge's own name so it reads as "relationship X between these two", not an unqualified
 // claim of physical connection.
 
@@ -422,32 +397,14 @@ function applySelection(selectedNodeId) {
 // --- Data loading and playback ------------------------------------------------------
 
 async function loadSeriesFor(body) {
-    const signalIds = requiredSymbols.map((symbol) => body.signalBySymbol[symbol].signalId);
-    const series = await window.konjugateVisualizer.readSeries(signalIds, { maxPoints: 20000 });
-    body.series = Object.fromEntries(requiredSymbols.map((symbol) => {
-        const item = series.find((entry) => entry.signalId === body.signalBySymbol[symbol].signalId);
-        return [symbol, item?.samples ?? []];
-    }));
-}
-
-// Binary search for the sample nearest the requested time -- an exact interpolation isn't
-// needed here, since the timeline only ever asks for a specific sampled instant, the same way
-// the plot viewer's own cursor line just marks a time position rather than resampling.
-function nearestValue(samples, time) {
-    if (!samples.length) return 0;
-    let low = 0;
-    let high = samples.length - 1;
-    while (low < high) {
-        const mid = (low + high) >> 1;
-        if (samples[mid].time < time) low = mid + 1; else high = mid;
-    }
-    if (low > 0 && Math.abs(samples[low - 1].time - time) <= Math.abs(samples[low].time - time)) low -= 1;
-    return samples[low].value;
+    const mapped = Object.entries(body.roles);
+    const series = await bridge.readSeries(mapped.map(([, signalId]) => signalId), { maxPoints: 20000 });
+    body.series = Object.fromEntries(mapped.map(([role, signalId]) => [role, series.find((entry) => entry.signalId === signalId)?.samples ?? []]));
 }
 
 function applyPose(body, time) {
     if (!body.object3D) return;
-    const pose = Object.fromEntries(requiredSymbols.map((symbol) => [symbol, nearestValue(body.series[symbol], time)]));
+    const pose = poseAt(body, body.series, time);
     body.object3D.position.copy(toThreeVector([pose.x, pose.y, pose.z]));
     const { bx, by, bz } = modelBodyAxes(pose.roll, pose.pitch, pose.yaw);
     const basis = new THREE.Matrix4().makeBasis(toThreeVector(bx), toThreeVector(by), toThreeVector(bz));
@@ -460,6 +417,28 @@ function applyAllPoses(time) {
 }
 
 // --- Sidebar -------------------------------------------------------------------------
+//
+// Built with the DOM rather than markup strings: node names are the user's own text, and the page's Content Security
+// Policy refuses inline style attributes, so a colour is set through the element's style instead.
+
+function element(tag, { className, text, attributes = {} } = {}, children = []) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+    node.append(...children);
+    return node;
+}
+
+function swatch(color) {
+    const node = element('i', { className: 'bodySwatch' });
+    node.style.background = color;
+    return node;
+}
+
+function sourceLabel(body) {
+    return body.source.kind === 'mapping' ? 'Your mapping' : `${body.source.conventionName} names`;
+}
 
 function renderBodyList() {
     const container = $('#bodies');
@@ -467,11 +446,11 @@ function renderBodyList() {
     $('#noBodies').hidden = Boolean(bodies.length);
     $('.sceneWorkspace').classList.toggle('hasBodies', Boolean(bodies.length));
     bodies.forEach((body) => {
-        const label = document.createElement('label');
-        label.className = 'bodyOption';
+        const row = element('div', { className: 'bodyRow' });
+        const label = element('label', { className: 'bodyOption' });
         label.style.setProperty('--body-color', body.color);
-        const input = document.createElement('input');
-        input.type = 'checkbox';
+        label.dataset.entityId = body.entityId;
+        const input = element('input', { attributes: { type: 'checkbox', 'aria-label': `Show ${body.entityName}` } });
         input.checked = !hiddenBodyIds.has(body.entityId);
         input.addEventListener('change', () => {
             if (input.checked) hiddenBodyIds.delete(body.entityId);
@@ -479,16 +458,232 @@ function renderBodyList() {
             if (body.object3D) body.object3D.visible = input.checked;
             refreshEdgeGeometry();
         });
-        const identity = document.createElement('span');
-        const name = document.createElement('b');
-        name.innerHTML = `<i class="bodySwatch" style="background:${body.color}"></i>${body.entityName}`;
-        const hint = document.createElement('small');
-        hint.textContent = 'x, y, z, roll, pitch, yaw';
-        identity.append(name, hint);
-        label.append(input, identity);
-        label.dataset.entityId = body.entityId;
-        container.appendChild(label);
+        const name = element('b', {}, [swatch(body.color), body.entityName]);
+        const hint = element('small', { text: describeBody(body, signalsById), attributes: { title: sourceLabel(body) } });
+        label.append(input, element('span', {}, [name, hint]));
+        const editing = editingEntityId === body.entityId;
+        const edit = element('button', { className: 'iconButton', text: editing ? 'Done' : 'Edit', attributes: { type: 'button', 'aria-expanded': String(editing), title: `Choose which states move ${body.entityName}` } });
+        edit.addEventListener('click', () => {
+            editingEntityId = editing ? null : body.entityId;
+            renderBodyList();
+        });
+        row.append(label, edit);
+        if (editing) row.append(bodyEditor(body));
+        container.appendChild(row);
     });
+    renderAddBody();
+    applySelection(context?.selectedNodeId ?? null);
+}
+
+// The choice kept with the project for one node, made if it has none yet.
+function choiceFor(entityId) {
+    projectData.bodies[entityId] ??= {};
+    return projectData.bodies[entityId];
+}
+
+// A role select and, for an unmapped role, the constant it holds -- one row per role.
+function bodyEditor(body) {
+    const editor = element('div', { className: 'bodyEditor' });
+    const nodeSignals = signals.filter((signal) => signal.entityId === body.entityId);
+    const anyDegrees = body.angleUnit === 'deg';
+    for (const { role, label, kind } of poseRoles) {
+        const select = element('select', { attributes: { 'aria-label': `${label} of ${body.entityName}` } });
+        select.append(element('option', { text: 'Constant', attributes: { value: '' } }));
+        for (const signal of nodeSignals) {
+            select.append(element('option', { text: `${signal.symbol}${signal.unit ? ` (${signal.unit})` : ''}`, attributes: { value: String(signal.signalId) } }));
+        }
+        select.value = role in body.roles ? String(body.roles[role]) : '';
+        select.addEventListener('change', () => {
+            const roles = { ...body.roles };
+            if (select.value) roles[role] = Number(select.value); else delete roles[role];
+            const choice = choiceFor(body.entityId);
+            if (Object.keys(roles).length) {
+                choice.roles = roles;
+                delete choice.excluded;
+            } else {
+                // No role left: the node is no longer a body.
+                delete choice.roles;
+                choice.excluded = true;
+                editingEntityId = null;
+            }
+            saveProjectData();
+        });
+        const cells = [element('span', { className: 'roleName', text: label }), select];
+        if (!(role in body.roles)) {
+            const constant = element('input', { attributes: { type: 'number', step: 'any', 'aria-label': `Constant ${label} of ${body.entityName}` } });
+            constant.value = String(body.constants[role] ?? 0);
+            constant.addEventListener('change', () => {
+                const value = Number(constant.value);
+                const choice = choiceFor(body.entityId);
+                choice.constants = { ...choice.constants, [role]: Number.isFinite(value) ? value : 0 };
+                saveProjectData();
+            });
+            cells.push(constant, element('small', { className: 'roleUnit', text: kind === 'angle' ? (anyDegrees ? 'deg' : 'rad') : '' }));
+        }
+        editor.append(element('div', { className: role in body.roles ? 'roleRow mapped' : 'roleRow' }, cells));
+    }
+    const unit = element('select', { attributes: { 'aria-label': `Angle unit of ${body.entityName}` } }, [
+        element('option', { text: 'Angles: each state\'s unit', attributes: { value: '' } }),
+        element('option', { text: 'Angles in radians', attributes: { value: 'rad' } }),
+        element('option', { text: 'Angles in degrees', attributes: { value: 'deg' } })
+    ]);
+    unit.value = body.angleUnit ?? '';
+    unit.addEventListener('change', () => {
+        const choice = choiceFor(body.entityId);
+        if (unit.value) choice.angleUnit = unit.value; else delete choice.angleUnit;
+        saveProjectData();
+    });
+    const actions = element('div', { className: 'editorActions' });
+    const nodeSignalsMatch = matchConvention(nodeSignals, activeConventions(settings));
+    if (body.source.kind === 'mapping' && nodeSignalsMatch) {
+        const reset = element('button', { text: `Use ${nodeSignalsMatch.convention.name} names`, attributes: { type: 'button' } });
+        reset.addEventListener('click', () => {
+            delete choiceFor(body.entityId).roles;
+            saveProjectData();
+        });
+        actions.append(reset);
+    }
+    const remove = element('button', { text: 'Remove body', attributes: { type: 'button' } });
+    remove.addEventListener('click', () => {
+        projectData.bodies[body.entityId] = { excluded: true };
+        editingEntityId = null;
+        saveProjectData();
+    });
+    actions.append(remove);
+    editor.append(unit, actions);
+    return editor;
+}
+
+// Any other node in the result can be made a body: its roles start from whatever states a convention would name (any
+// convention, active or not), or its first state as x, and the editor opens to set the rest.
+function renderAddBody() {
+    const select = $('#addBody');
+    select.replaceChildren(element('option', { text: otherNodes.length ? 'Add a body…' : 'Every node is shown', attributes: { value: '' } }));
+    for (const { entityId, entityName } of otherNodes) select.append(element('option', { text: entityName, attributes: { value: String(entityId) } }));
+    select.disabled = !otherNodes.length;
+}
+
+$('#addBody').addEventListener('change', (event) => {
+    const entityId = Number(event.target.value);
+    if (!entityId) return;
+    const nodeSignals = signals.filter((signal) => signal.entityId === entityId);
+    const bySymbol = new Map(nodeSignals.map((signal) => [signal.symbol, signal]));
+    const roles = {};
+    for (const convention of allConventions(settings)) {
+        for (const [role, symbol] of Object.entries(convention.symbols)) {
+            if (!(role in roles) && bySymbol.has(symbol)) roles[role] = bySymbol.get(symbol).signalId;
+        }
+    }
+    if (!Object.keys(roles).length && nodeSignals.length) roles.x = nodeSignals[0].signalId;
+    const choice = choiceFor(entityId);
+    delete choice.excluded;
+    choice.roles = roles;
+    editingEntityId = entityId;
+    saveProjectData();
+});
+
+// --- Naming conventions --------------------------------------------------------------------
+
+function conventionSummary(convention) {
+    return poseRoles.filter(({ role }) => role in convention.symbols)
+        .map(({ role }) => (convention.symbols[role] === role ? role : `${role} = ${convention.symbols[role]}`)).join(', ');
+}
+
+function renderConventions() {
+    const list = $('#conventions');
+    list.replaceChildren();
+    for (const convention of allConventions(settings)) {
+        const row = element('div', { className: 'conventionRow' });
+        const toggle = element('label', { className: 'viewToggle' });
+        const input = element('input', { attributes: { type: 'checkbox' } });
+        input.checked = settings.activeConventionIds.includes(convention.id);
+        input.addEventListener('change', () => {
+            settings.activeConventionIds = input.checked
+                ? [...settings.activeConventionIds, convention.id]
+                : settings.activeConventionIds.filter((id) => id !== convention.id);
+            saveSettings();
+        });
+        toggle.append(input, element('span', {}, [element('b', { text: convention.name }), element('small', { text: conventionSummary(convention) })]));
+        row.append(toggle);
+        if (!convention.builtIn) {
+            const edit = element('button', { className: 'iconButton', text: 'Edit', attributes: { type: 'button' } });
+            edit.addEventListener('click', () => { conventionDraft = structuredClone(convention); renderConventions(); });
+            const remove = element('button', { className: 'iconButton', text: 'Delete', attributes: { type: 'button', 'aria-label': `Delete ${convention.name}` } });
+            remove.addEventListener('click', () => {
+                settings.conventions = settings.conventions.filter(({ id }) => id !== convention.id);
+                settings.activeConventionIds = settings.activeConventionIds.filter((id) => id !== convention.id);
+                saveSettings();
+            });
+            row.append(edit, remove);
+        }
+        list.append(row);
+    }
+    $('#newConvention').hidden = Boolean(conventionDraft);
+    $('#conventionForm').hidden = !conventionDraft;
+    if (conventionDraft) fillConventionForm();
+}
+
+function fillConventionForm() {
+    const form = $('#conventionForm');
+    form.elements.name.value = conventionDraft.name ?? '';
+    for (const { role } of poseRoles) form.elements[role].value = conventionDraft.symbols?.[role] ?? '';
+    $('#conventionError').textContent = '';
+}
+
+$('#newConvention').addEventListener('click', () => {
+    conventionDraft = { id: `convention-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`, name: '', symbols: {} };
+    renderConventions();
+    $('#conventionForm').elements.name.focus();
+});
+
+$('#conventionForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const convention = normalizeConvention({
+        id: conventionDraft.id,
+        name: form.elements.name.value,
+        symbols: Object.fromEntries(poseRoles.map(({ role }) => [role, form.elements[role].value]))
+    });
+    if (!convention) {
+        $('#conventionError').textContent = 'Give it a name and the state symbol for at least one role, each symbol used once.';
+        return;
+    }
+    const existing = settings.conventions.findIndex(({ id }) => id === convention.id);
+    if (existing >= 0) settings.conventions[existing] = convention;
+    else {
+        settings.conventions.push(convention);
+        settings.activeConventionIds.push(convention.id);
+    }
+    conventionDraft = null;
+    saveSettings();
+});
+
+$('#cancelConvention').addEventListener('click', () => {
+    conventionDraft = null;
+    renderConventions();
+});
+
+// --- Keeping what the user set up ------------------------------------------------------------
+
+function reportSaveFailure(error) {
+    $('#configStatus').textContent = `Could not keep this change · ${error?.message ?? error}`;
+}
+
+// Each node's choices go with the project (saved when the user saves it); then the scene follows them.
+function saveProjectData() {
+    projectData = normalizeProjectData(projectData);
+    $('#configStatus').textContent = '';
+    bridge.setProjectData(Object.keys(projectData.bodies).length ? projectData : null).catch(reportSaveFailure);
+    applyConfiguration();
+}
+
+// Conventions are the user's own, the same in every project.
+function saveSettings() {
+    settings = normalizeSettings(settings);
+    $('#configStatus').textContent = '';
+    bridge.setSettings(settings).catch(reportSaveFailure);
+    renderConventions();
+    applyConfiguration();
 }
 
 // --- Session lifecycle -----------------------------------------------------------------
@@ -506,22 +701,57 @@ function disposeBodies() {
     bodies = [];
 }
 
+// Finds the bodies from the signals, the conventions and the project's choices, reads their samples, and replaces
+// the scene's bodies with them. A later call overtakes one still reading.
+let configurationGeneration = 0;
+async function applyConfiguration() {
+    const generation = ++configurationGeneration;
+    const resolved = resolveBodies(signals, { conventions: activeConventions(settings), projectData });
+    const prepared = resolved.bodies.map((body, index) => ({ ...body, color: bodyPalette[index % bodyPalette.length], series: {}, object3D: null }));
+    await Promise.all(prepared.map(loadSeriesFor));
+    if (generation !== configurationGeneration) return;
+    disposeBodies();
+    bodies = prepared;
+    otherNodes = resolved.others;
+    if (!bodies.some((body) => body.entityId === editingEntityId)) editingEntityId = null;
+    bodies.forEach((body) => {
+        body.object3D = buildBodyObject(body);
+        body.object3D.visible = !hiddenBodyIds.has(body.entityId);
+    });
+    renderBodyList();
+    applyAllPoses(context?.time ?? 0);
+    buildEdgeLines();
+}
+
+// The first scene this window shows starts square on to the plane its bodies move in, when they move in only one.
+function suggestStartingView() {
+    if (viewSuggested || !bodies.length) return;
+    viewSuggested = true;
+    const face = suggestedView(bodies);
+    if (!face) return;
+    const fit = fitOrbit(bodyBounds(), camera.fov, camera.aspect);
+    animateOrbitTo({ ...orbitAnglesFor(faceDirections[face]), radius: fit?.radius ?? orbit.radius, target: fit?.target ?? orbit.target.clone() });
+}
+
 async function loadSession() {
     stopPlayback();
-    context = await window.konjugateVisualizer.getContext();
+    context = await bridge.getContext();
     if (!context) return;
-    const signals = await window.konjugateVisualizer.listSignals();
-    disposeBodies();
-    bodies = detectBodies(signals);
+    signals = await bridge.listSignals();
+    signalsById = new Map(signals.map((signal) => [signal.signalId, signal]));
+    const [storedSettings, stored] = await Promise.all([
+        bridge.getSettings().catch(() => null),
+        bridge.getProjectData().catch(() => null)
+    ]);
+    settings = normalizeSettings(storedSettings);
+    projectData = normalizeProjectData(stored?.data);
     hiddenBodyIds = new Set();
+    editingEntityId = null;
     nodesById = new Map((context.nodes ?? []).map((node) => [node.id, node]));
     edgesForBodies = context.edges ?? [];
-    await Promise.all(bodies.map(loadSeriesFor));
-    bodies.forEach((body) => { body.object3D = buildBodyObject(body); });
-    renderBodyList();
-    applyAllPoses(context.time);
-    applySelection(context.selectedNodeId);
-    buildEdgeLines();
+    renderConventions();
+    await applyConfiguration();
+    suggestStartingView();
 
     $('#projectName').textContent = context.projectName;
     $('#runName').textContent = context.run.name;
