@@ -1,6 +1,6 @@
 {
   "name": "konjugate-posevisualizer",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "minimumKonjugateVersion": "1.1.15",
   "private": true,
   "type": "module",
