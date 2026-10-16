@@ -10,8 +10,11 @@ const { createPackageArchive } = await import(pathToFileURL(konjugateModule('src
 const packageDirectory = join(repoRoot, 'package');
 const outputDirectory = join(repoRoot, 'out');
 
-// package.json is the single source of the version, so release tags always match the package.
-const { version } = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
+// package.json is the single source of the version, so release tags always match the package, and of the lowest Konjugate they
+// have been tested on (see Konjugate's docs/packageDevelopment.md, Compatibility). It is required: a package that forgets it
+// would silently claim to run on any Konjugate.
+const { version, minimumKonjugateVersion } = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
+if (!minimumKonjugateVersion) throw new Error('package.json must declare minimumKonjugateVersion, the lowest Konjugate these packages have been tested on.');
 const manifest = { ...JSON.parse(await readFile(join(packageDirectory, 'addon.json'), 'utf8')), version };
 const files = {};
 // Recurses into package/vendor/ (the vendored three.js copy -- see THIRD-PARTY-NOTICES.md) as well
@@ -28,7 +31,7 @@ await collect();
 const archive = createPackageArchive({
     packageManifest: {
         format: 'konjugate-package', formatVersion: 1, packageType: 'addon',
-        packageId: manifest.addonId, name: manifest.name, version: manifest.version,
+        packageId: manifest.addonId, name: manifest.name, version: manifest.version, minimumKonjugateVersion,
         contents: { manifest: 'addon.json' }
     },
     contributionManifest: manifest,
