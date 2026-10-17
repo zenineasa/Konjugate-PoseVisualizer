@@ -66,7 +66,7 @@ main { display: grid; min-height: 0; grid-template-columns: minmax(0, 1fr) 260px
 .conventionRow small { overflow-wrap: anywhere; color: #5f747e; font-size: 8px; }
 #newConvention { margin-top: 6px; }
 #conventionForm { display: grid; gap: 4px; margin-top: 6px; }
-#conventionForm[hidden] { display: none; }
+#conventionForm[hidden], .formRow[hidden] { display: none; }
 .formRow { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 4px; color: #758b95; font-size: 9px; }
 #conventionError { margin: 0; color: #e07a7a; font-size: 8px; }
 #conventionError:empty { display: none; }

@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
-    activeConventions, defaultConvention, describeBody, matchConvention, modelBodyAxes, nearestValue, normalizeConvention,
-    normalizeProjectData, normalizeSettings, poseAt, resolveBodies, suggestedView
+    activeConventions, defaultConvention, describeBody, matchConvention, modelBodyAxes, modelBodyAxesFromQuaternion,
+    nearestValue, normalizeConvention, normalizeProjectData, normalizeSettings, poseAt, poseBodyAxes, resolveBodies,
+    rolesFor, suggestedView
 } from '../package/poseModel.mjs';
 
 // A result catalogue as listSignals gives it: one entry per state, numbered from 100 by node.
@@ -133,7 +134,7 @@ test('settings read back only well-formed conventions, with the default active u
         ],
         activeConventionIds: ['planar', 'gone']
     });
-    assert.deepEqual(settings.conventions, [{ id: 'planar', name: 'Planar', symbols: { x: 'px', y: 'py' } }]);
+    assert.deepEqual(settings.conventions, [{ id: 'planar', name: 'Planar', orientation: 'angles', symbols: { x: 'px', y: 'py' } }]);
     assert.deepEqual(activeConventions(settings).map(({ id }) => id), ['planar']);
 });
 
@@ -157,4 +158,108 @@ test('project data keeps only what it can use, by numeric node and signal ids', 
 test('the viewer builds the sidebar with the DOM, never markup strings', async () => {
     const source = await readFile(new URL('../package/viewer.mjs', import.meta.url), 'utf8');
     assert.doesNotMatch(source, /\.(innerHTML|outerHTML)\s*=|insertAdjacentHTML/);
+});
+
+// --- Quaternions ------------------------------------------------------------------------------------------------
+
+// The quaternion for the ZYX angles modelBodyAxes uses, R = Rz(yaw)*Ry(pitch)*Rx(roll), as [w, x, y, z].
+function quaternionFromAngles(roll, pitch, yaw) {
+    const [cr, sr] = [Math.cos(roll / 2), Math.sin(roll / 2)];
+    const [cp, sp] = [Math.cos(pitch / 2), Math.sin(pitch / 2)];
+    const [cy, sy] = [Math.cos(yaw / 2), Math.sin(yaw / 2)];
+    return [cr * cp * cy + sr * sp * sy, sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy, cr * cp * sy - sr * sp * cy];
+}
+const sameAxes = (actual, expected, tolerance = 1e-12) => ['bx', 'by', 'bz'].forEach((axis) =>
+    actual[axis].forEach((value, index) => near(value, expected[axis][index], tolerance)));
+
+test('a quaternion turns a body exactly as the same rotation in roll, pitch and yaw does', () => {
+    for (const [roll, pitch, yaw] of [[0, 0, 0], [0, 0, Math.PI / 2], [0, Math.PI / 2, 0], [Math.PI / 2, 0, 0], [0.3, -1.1, 2.4], [-2.9, 0.7, -0.4]]) {
+        sameAxes(modelBodyAxesFromQuaternion(...quaternionFromAngles(roll, pitch, yaw)), modelBodyAxes(roll, pitch, yaw));
+    }
+});
+
+test('a quaternion of any length or sign gives the same axes, and one of zero length leaves the body unturned', () => {
+    const q = quaternionFromAngles(0.3, -1.1, 2.4);
+    const expected = modelBodyAxesFromQuaternion(...q);
+    sameAxes(modelBodyAxesFromQuaternion(...q.map((value) => value * 2.5)), expected);
+    sameAxes(modelBodyAxesFromQuaternion(...q.map((value) => -value)), expected);
+    sameAxes(modelBodyAxesFromQuaternion(0, 0, 0, 0), { bx: [1, 0, 0], by: [0, 1, 0], bz: [0, 0, 1] });
+    sameAxes(modelBodyAxesFromQuaternion(Number.NaN, 0, 0, 0), { bx: [1, 0, 0], by: [0, 1, 0], bz: [0, 0, 1] });
+});
+
+// The reason for quaternions: at a pitch of 90 degrees roll and yaw turn about the same axis, so three angles cannot
+// tell them apart, and a solver's angles jump there. A quaternion passing through the same pose stays smooth.
+test('a quaternion through a pitch of 90 degrees has no jump, where the three angles lock', () => {
+    const steps = 50;
+    let previous = null;
+    for (let index = 0; index <= steps; index += 1) {
+        const pitch = (index / steps) * Math.PI;
+        const axes = modelBodyAxesFromQuaternion(Math.cos(pitch / 2), 0.2 * Math.sin(pitch / 2), Math.sin(pitch / 2), 0);
+        if (previous) assert.ok(Math.hypot(...axes.bx.map((value, i) => value - previous.bx[i])) < 0.1);
+        previous = axes;
+    }
+    // Locked: at pitch 90 degrees, roll 0.4 with yaw 0 and roll 0 with yaw -0.4 are the same orientation.
+    sameAxes(modelBodyAxes(0.4, Math.PI / 2, 0), modelBodyAxes(0, Math.PI / 2, -0.4));
+});
+
+const quaternionSeries = (q) => ({ qw: constantSeries(q[0]), qx: constantSeries(q[1]), qy: constantSeries(q[2]), qz: constantSeries(q[3]) });
+const byId = (signals) => new Map(signals.map((signal) => [signal.signalId, signal]));
+
+test('a body is turned by a quaternion only when its convention says so, with whatever state names it gives', () => {
+    const mujoco = normalizeConvention({ id: 'mujoco', name: 'MuJoCo', orientation: 'quaternion',
+        symbols: { x: 'px', y: 'py', z: 'pz', qw: 'q0', qx: 'q1', qy: 'q2', qz: 'q3' } });
+    const signals = catalogue({ 1: ['px', 'py', 'pz', 'q0', 'q1', 'q2', 'q3'], 2: ['x', 'y', 'z', 'roll', 'pitch', 'yaw', 'qw', 'qx', 'qy', 'qz'] });
+    // States named qw to qz are not taken for a quaternion by themselves: node 2 is the default convention's, by angles.
+    const { bodies } = resolveBodies(signals, { conventions: [defaultConvention, mujoco] });
+    assert.deepEqual(bodies.map(({ entityId, orientation, source }) => [entityId, orientation, source.conventionId]),
+        [[1, 'quaternion', 'mujoco'], [2, 'angles', 'konjugate']]);
+    const q = quaternionFromAngles(0, 0, Math.PI / 2);
+    const pose = poseAt(bodies[0], { x: constantSeries(1), y: constantSeries(2), z: constantSeries(3), ...quaternionSeries(q) }, 0);
+    assert.deepEqual([pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw], [1, 2, 3, 0, 0, 0]);
+    assert.deepEqual(pose.quaternion, q);
+    sameAxes(poseBodyAxes(pose), modelBodyAxes(0, 0, Math.PI / 2));
+    assert.equal(describeBody(bodies[0], byId(signals)), 'x = px, y = py, z = pz, qw = q0, qx = q1, qy = q2, qz = q3');
+    assert.equal(poseAt(bodies[1], {}, 0).quaternion, undefined);
+});
+
+test('a node\'s own mapping chooses its orientation, keeping only the roles that orientation uses', () => {
+    const signals = catalogue({ 1: ['yaw', 'a', 'b', 'c', 'd:deg'] });
+    const projectData = normalizeProjectData({ bodies: { 1: {
+        orientation: 'quaternion', roles: { yaw: 100, qw: 101, qx: 102, qy: 103, qz: 104 }, constants: { yaw: 1, qw: 1, z: 2 }
+    } } });
+    assert.deepEqual(projectData.bodies[1], { roles: { qw: 101, qx: 102, qy: 103, qz: 104 }, orientation: 'quaternion', constants: { z: 2 } });
+    const [body] = resolveBodies(signals, { conventions: [], projectData }).bodies;
+    assert.equal(body.orientation, 'quaternion');
+    sameAxes(poseBodyAxes(poseAt(body, quaternionSeries([1, 0, 0, 0]), 0)), modelBodyAxes(0, 0, 0));
+    // A quaternion is unitless: a state marked in degrees does not make it read as degrees.
+    assert.equal(describeBody(body, byId(signals)), 'qw = a, qx = b, qy = c, qz = d');
+    assert.equal(suggestedView([body]), null);
+
+    // The same mapping by angles keeps yaw and drops the quaternion.
+    const byAngles = normalizeProjectData({ bodies: { 1: { roles: { yaw: 100, qw: 101 } } } });
+    assert.deepEqual(byAngles.bodies[1], { roles: { yaw: 100 } });
+    const [turned] = resolveBodies(signals, { conventions: [], projectData: byAngles }).bodies;
+    assert.equal(turned.orientation, 'angles');
+    sameAxes(poseBodyAxes(poseAt(turned, { yaw: constantSeries(Math.PI / 2) }, 0)), modelBodyAxes(0, 0, Math.PI / 2));
+});
+
+test('a body turned by a quaternion stays unturned until all four of its states are chosen', () => {
+    const signals = catalogue({ 1: ['p', 'a', 'b'] });
+    const projectData = normalizeProjectData({ bodies: { 1: { orientation: 'quaternion', roles: { x: 100, qw: 101, qx: 102 } } } });
+    const [body] = resolveBodies(signals, { conventions: [], projectData }).bodies;
+    const pose = poseAt(body, { x: constantSeries(4), qw: constantSeries(0), qx: constantSeries(1) }, 0);
+    assert.equal(pose.x, 4);
+    assert.deepEqual(pose.quaternion, [1, 0, 0, 0]);
+    assert.equal(suggestedView([body]), 'front');
+});
+
+test('a convention takes the names of its own orientation only, and a quaternion whole or not at all', () => {
+    assert.deepEqual(normalizeConvention({ id: 'mixed', name: 'Mixed', orientation: 'quaternion',
+        symbols: { x: 'px', yaw: 'h', qw: 'a', qx: 'b', qy: 'c', qz: 'd' } }),
+    { id: 'mixed', name: 'Mixed', orientation: 'quaternion', symbols: { x: 'px', qw: 'a', qx: 'b', qy: 'c', qz: 'd' } });
+    assert.deepEqual(normalizeConvention({ id: 'angles', name: 'Angles', symbols: { yaw: 'h', qw: 'a' } }).symbols, { yaw: 'h' });
+    assert.equal(normalizeConvention({ id: 'part', name: 'Part', orientation: 'quaternion', symbols: { qw: 'a', qx: 'b', qy: 'c' } }), null);
+    assert.equal(normalizeConvention({ id: 'konjugate', name: 'Impostor', orientation: 'quaternion', symbols: { x: 'x' } }), null);
+    assert.deepEqual(rolesFor('quaternion').map(({ role }) => role), ['x', 'y', 'z', 'qw', 'qx', 'qy', 'qz']);
+    assert.deepEqual(rolesFor('anything else').map(({ role }) => role), ['x', 'y', 'z', 'roll', 'pitch', 'yaw']);
 });

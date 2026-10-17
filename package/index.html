@@ -64,17 +64,22 @@
             <p id="configStatus" role="status"></p>
             <details class="conventionPanel">
                 <summary>Naming conventions</summary>
-                <p class="panelNote">A node whose states have every name a ticked convention lists is shown as a body. Roles a convention leaves out stay still.</p>
+                <p class="panelNote">A node whose states have every name a ticked convention lists is shown as a body. Roles a convention leaves out stay still. Each convention turns its bodies either by roll, pitch and yaw or by a quaternion, with state names of your choosing.</p>
                 <div id="conventions"></div>
                 <button id="newConvention" type="button">New convention</button>
                 <form id="conventionForm" hidden>
                     <label class="formRow"><span>Name</span><input name="name" type="text" autocomplete="off" required></label>
+                    <label class="formRow"><span>Turn</span><select name="orientation"><option value="angles">By roll, pitch and yaw</option><option value="quaternion">By a quaternion</option></select></label>
                     <label class="formRow"><span>X</span><input name="x" type="text" autocomplete="off" placeholder="not used"></label>
                     <label class="formRow"><span>Y</span><input name="y" type="text" autocomplete="off" placeholder="not used"></label>
                     <label class="formRow"><span>Z</span><input name="z" type="text" autocomplete="off" placeholder="not used"></label>
                     <label class="formRow"><span>Roll</span><input name="roll" type="text" autocomplete="off" placeholder="not used"></label>
                     <label class="formRow"><span>Pitch</span><input name="pitch" type="text" autocomplete="off" placeholder="not used"></label>
                     <label class="formRow"><span>Yaw</span><input name="yaw" type="text" autocomplete="off" placeholder="not used"></label>
+                    <label class="formRow"><span>Qw</span><input name="qw" type="text" autocomplete="off" placeholder="not used"></label>
+                    <label class="formRow"><span>Qx</span><input name="qx" type="text" autocomplete="off" placeholder="not used"></label>
+                    <label class="formRow"><span>Qy</span><input name="qy" type="text" autocomplete="off" placeholder="not used"></label>
+                    <label class="formRow"><span>Qz</span><input name="qz" type="text" autocomplete="off" placeholder="not used"></label>
                     <p id="conventionError" role="alert"></p>
                     <div class="editorActions"><button type="submit">Save</button><button id="cancelConvention" type="button">Cancel</button></div>
                 </form>

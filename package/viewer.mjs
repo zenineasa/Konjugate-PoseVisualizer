@@ -5,8 +5,9 @@ import {
     activeFace, faceDirections, fitOrbit, interpolateOrbit, orbitAnglesFor, panOffset, transitionMilliseconds, zoomedRadius
 } from './viewCamera.mjs';
 import {
-    activeConventions, allConventions, describeBody, matchConvention, modelBodyAxes, normalizeConvention,
-    normalizeProjectData, normalizeSettings, poseAt, poseRoles, resolveBodies, suggestedView
+    activeConventions, allConventions, describeBody, hasQuaternion, matchConvention, normalizeConvention, normalizeOrientation,
+    normalizeProjectData, normalizeSettings, orientations, poseAt, poseBodyAxes, poseRoles, quaternionRoles, resolveBodies,
+    rolesFor, suggestedView
 } from './poseModel.mjs';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -406,7 +407,7 @@ function applyPose(body, time) {
     if (!body.object3D) return;
     const pose = poseAt(body, body.series, time);
     body.object3D.position.copy(toThreeVector([pose.x, pose.y, pose.z]));
-    const { bx, by, bz } = modelBodyAxes(pose.roll, pose.pitch, pose.yaw);
+    const { bx, by, bz } = poseBodyAxes(pose);
     const basis = new THREE.Matrix4().makeBasis(toThreeVector(bx), toThreeVector(by), toThreeVector(bz));
     body.object3D.quaternion.setFromRotationMatrix(basis);
 }
@@ -481,14 +482,45 @@ function choiceFor(entityId) {
     return projectData.bodies[entityId];
 }
 
-// A role select and, for an unmapped role, the constant it holds -- one row per role.
+// The roles a node would start with for an orientation: whatever its states are named in a convention of that
+// orientation (any convention, active or not), keeping the positions it already has.
+function startingRoles(nodeSignals, orientation, positions = {}) {
+    const bySymbol = new Map(nodeSignals.map((signal) => [signal.symbol, signal]));
+    const usable = new Set(rolesFor(orientation).map(({ role }) => role));
+    const roles = { ...positions };
+    for (const convention of allConventions(settings)) {
+        if (normalizeOrientation(convention.orientation) !== orientation) continue;
+        for (const [role, symbol] of Object.entries(convention.symbols)) {
+            if (usable.has(role) && !(role in roles) && bySymbol.has(symbol)) roles[role] = bySymbol.get(symbol).signalId;
+        }
+    }
+    return roles;
+}
+
+// How the body is turned, then a role select and, for an unmapped position or angle, the constant it holds -- one row
+// per role its orientation uses. A quaternion role has no constant: a quaternion is all four states or none.
 function bodyEditor(body) {
     const editor = element('div', { className: 'bodyEditor' });
     const nodeSignals = signals.filter((signal) => signal.entityId === body.entityId);
     const anyDegrees = body.angleUnit === 'deg';
-    for (const { role, label, kind } of poseRoles) {
+    const turnedBy = element('select', { attributes: { 'aria-label': `How ${body.entityName} is turned` } },
+        orientations.map(({ orientation, label }) => element('option', { text: `Turned by ${label.toLowerCase()}`, attributes: { value: orientation } })));
+    turnedBy.value = body.orientation;
+    turnedBy.addEventListener('change', () => {
+        const orientation = normalizeOrientation(turnedBy.value);
+        const positions = Object.fromEntries(Object.entries(body.roles).filter(([role]) => ['x', 'y', 'z'].includes(role)));
+        const roles = startingRoles(nodeSignals, orientation, positions);
+        const choice = choiceFor(body.entityId);
+        delete choice.excluded;
+        // A node with nothing to map yet keeps its first state as x, so it stays a body while the rest is chosen.
+        choice.roles = Object.keys(roles).length ? roles : { x: nodeSignals[0].signalId };
+        if (orientation === 'quaternion') choice.orientation = orientation; else delete choice.orientation;
+        saveProjectData();
+    });
+    editor.append(turnedBy);
+    for (const { role, label, kind } of rolesFor(body.orientation)) {
         const select = element('select', { attributes: { 'aria-label': `${label} of ${body.entityName}` } });
-        select.append(element('option', { text: 'Constant', attributes: { value: '' } }));
+        select.append(element('option', { text: kind === 'quaternion' ? 'Not used' : 'Constant', attributes: { value: '' } }));
         for (const signal of nodeSignals) {
             select.append(element('option', { text: `${signal.symbol}${signal.unit ? ` (${signal.unit})` : ''}`, attributes: { value: String(signal.signalId) } }));
         }
@@ -499,6 +531,7 @@ function bodyEditor(body) {
             const choice = choiceFor(body.entityId);
             if (Object.keys(roles).length) {
                 choice.roles = roles;
+                if (body.orientation === 'quaternion') choice.orientation = body.orientation; else delete choice.orientation;
                 delete choice.excluded;
             } else {
                 // No role left: the node is no longer a body.
@@ -509,7 +542,7 @@ function bodyEditor(body) {
             saveProjectData();
         });
         const cells = [element('span', { className: 'roleName', text: label }), select];
-        if (!(role in body.roles)) {
+        if (!(role in body.roles) && kind !== 'quaternion') {
             const constant = element('input', { attributes: { type: 'number', step: 'any', 'aria-label': `Constant ${label} of ${body.entityName}` } });
             constant.value = String(body.constants[role] ?? 0);
             constant.addEventListener('change', () => {
@@ -520,25 +553,32 @@ function bodyEditor(body) {
             });
             cells.push(constant, element('small', { className: 'roleUnit', text: kind === 'angle' ? (anyDegrees ? 'deg' : 'rad') : '' }));
         }
-        editor.append(element('div', { className: role in body.roles ? 'roleRow mapped' : 'roleRow' }, cells));
+        editor.append(element('div', { className: role in body.roles || kind === 'quaternion' ? 'roleRow mapped' : 'roleRow' }, cells));
     }
-    const unit = element('select', { attributes: { 'aria-label': `Angle unit of ${body.entityName}` } }, [
+    if (body.orientation === 'quaternion' && !hasQuaternion(body.roles)) {
+        const chosen = quaternionRoles.filter((role) => role in body.roles).length;
+        editor.append(element('p', { className: 'panelNote', text: `A quaternion needs all four states (${chosen} of 4 chosen); until then the body stays unturned.` }));
+    }
+    const unit = body.orientation === 'quaternion' ? null : element('select', { attributes: { 'aria-label': `Angle unit of ${body.entityName}` } }, [
         element('option', { text: 'Angles: each state\'s unit', attributes: { value: '' } }),
         element('option', { text: 'Angles in radians', attributes: { value: 'rad' } }),
         element('option', { text: 'Angles in degrees', attributes: { value: 'deg' } })
     ]);
-    unit.value = body.angleUnit ?? '';
-    unit.addEventListener('change', () => {
+    unit?.addEventListener('change', () => {
         const choice = choiceFor(body.entityId);
         if (unit.value) choice.angleUnit = unit.value; else delete choice.angleUnit;
         saveProjectData();
     });
+    if (unit) unit.value = body.angleUnit ?? '';
     const actions = element('div', { className: 'editorActions' });
     const nodeSignalsMatch = matchConvention(nodeSignals, activeConventions(settings));
     if (body.source.kind === 'mapping' && nodeSignalsMatch) {
+        // Back to the convention, which brings its own orientation.
         const reset = element('button', { text: `Use ${nodeSignalsMatch.convention.name} names`, attributes: { type: 'button' } });
         reset.addEventListener('click', () => {
-            delete choiceFor(body.entityId).roles;
+            const choice = choiceFor(body.entityId);
+            delete choice.roles;
+            delete choice.orientation;
             saveProjectData();
         });
         actions.append(reset);
@@ -550,12 +590,13 @@ function bodyEditor(body) {
         saveProjectData();
     });
     actions.append(remove);
-    editor.append(unit, actions);
+    editor.append(...(unit ? [unit] : []), actions);
     return editor;
 }
 
-// Any other node in the result can be made a body: its roles start from whatever states a convention would name (any
-// convention, active or not), or its first state as x, and the editor opens to set the rest.
+// Any other node in the result can be made a body: its roles start from whatever states a convention would name (the
+// convention matching most of them, active or not, which also sets how it is turned), or its first state as x turned
+// by the three angles, and the editor opens to set the rest.
 function renderAddBody() {
     const select = $('#addBody');
     select.replaceChildren(element('option', { text: otherNodes.length ? 'Add a body…' : 'Every node is shown', attributes: { value: '' } }));
@@ -567,17 +608,13 @@ $('#addBody').addEventListener('change', (event) => {
     const entityId = Number(event.target.value);
     if (!entityId) return;
     const nodeSignals = signals.filter((signal) => signal.entityId === entityId);
-    const bySymbol = new Map(nodeSignals.map((signal) => [signal.symbol, signal]));
-    const roles = {};
-    for (const convention of allConventions(settings)) {
-        for (const [role, symbol] of Object.entries(convention.symbols)) {
-            if (!(role in roles) && bySymbol.has(symbol)) roles[role] = bySymbol.get(symbol).signalId;
-        }
-    }
-    if (!Object.keys(roles).length && nodeSignals.length) roles.x = nodeSignals[0].signalId;
+    const counts = orientations.map(({ orientation }) => ({ orientation, roles: startingRoles(nodeSignals, orientation) }));
+    let { orientation, roles } = counts.reduce((best, next) => (Object.keys(next.roles).length > Object.keys(best.roles).length ? next : best));
+    if (!Object.keys(roles).length && nodeSignals.length) roles = { x: nodeSignals[0].signalId };
     const choice = choiceFor(entityId);
     delete choice.excluded;
     choice.roles = roles;
+    if (orientation === 'quaternion') choice.orientation = orientation; else delete choice.orientation;
     editingEntityId = entityId;
     saveProjectData();
 });
@@ -585,8 +622,9 @@ $('#addBody').addEventListener('change', (event) => {
 // --- Naming conventions --------------------------------------------------------------------
 
 function conventionSummary(convention) {
-    return poseRoles.filter(({ role }) => role in convention.symbols)
+    const named = poseRoles.filter(({ role }) => role in convention.symbols)
         .map(({ role }) => (convention.symbols[role] === role ? role : `${role} = ${convention.symbols[role]}`)).join(', ');
+    return normalizeOrientation(convention.orientation) === 'quaternion' ? `${named} · quaternion` : named;
 }
 
 function renderConventions() {
@@ -626,9 +664,20 @@ function renderConventions() {
 function fillConventionForm() {
     const form = $('#conventionForm');
     form.elements.name.value = conventionDraft.name ?? '';
+    form.elements.orientation.value = normalizeOrientation(conventionDraft.orientation);
     for (const { role } of poseRoles) form.elements[role].value = conventionDraft.symbols?.[role] ?? '';
+    showConventionOrientation();
     $('#conventionError').textContent = '';
 }
+
+// The form shows the angle fields or the quaternion fields, whichever the convention turns its bodies by; what was
+// typed in the others stays until the form is saved, then only the chosen orientation's names are kept.
+function showConventionOrientation() {
+    const form = $('#conventionForm');
+    const shown = new Set(rolesFor(form.elements.orientation.value).map(({ role }) => role));
+    for (const { role } of poseRoles) form.elements[role].closest('.formRow').hidden = !shown.has(role);
+}
+$('#conventionForm').elements.orientation.addEventListener('change', showConventionOrientation);
 
 $('#newConvention').addEventListener('click', () => {
     conventionDraft = { id: `convention-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`, name: '', symbols: {} };
@@ -642,10 +691,11 @@ $('#conventionForm').addEventListener('submit', (event) => {
     const convention = normalizeConvention({
         id: conventionDraft.id,
         name: form.elements.name.value,
+        orientation: form.elements.orientation.value,
         symbols: Object.fromEntries(poseRoles.map(({ role }) => [role, form.elements[role].value]))
     });
     if (!convention) {
-        $('#conventionError').textContent = 'Give it a name and the state symbol for at least one role, each symbol used once.';
+        $('#conventionError').textContent = 'Give it a name and the state symbol for at least one role, each symbol used once. A quaternion needs all four.';
         return;
     }
     const existing = settings.conventions.findIndex(({ id }) => id === convention.id);
