@@ -27,7 +27,7 @@ let bodies = [];
 // Nodes in the result that aren't bodies, which the user may make one.
 let otherNodes = [];
 // The body whose roles are open for editing in the sidebar, and the convention being written, if any.
-let editingEntityId = null;
+let editingBodyId = null;
 let conventionDraft = null;
 let viewSuggested = false;
 let hiddenBodyIds = new Set();
@@ -261,7 +261,17 @@ function normalizedGeometry(geometry) {
     return geometry;
 }
 
+// A body that is part of its node (a robot's link, by its prefix) is drawn with that part's mesh, as it is: in metres,
+// about the body's own origin, as its pose places it. The node's other shapes are sized for the canvas, not the world.
+// A part is the body's own shape, not one the canvas gives its node, so it is drawn whether or not the canvas's shapes are.
+function partOf(body) {
+    if (!body.prefix) return null;
+    return nodesById.get(body.entityId)?.parts?.find((part) => part.prefix === body.prefix && part.mesh?.position?.length) ?? null;
+}
+
 function bodyGeometryAndColor(body) {
+    const part = partOf(body);
+    if (part) return { geometry: geometryFromMeshDocument(part.mesh), color: part.color ?? body.color, rotation: [0, 0, 0], scale: [1, 1, 1], trueScale: true };
     const node = useEditorShapes ? nodesById.get(body.entityId) : null;
     if (!node) return { geometry: new THREE.BoxGeometry(0.3, 0.18, 0.42), color: body.color, rotation: [0, 0, 0], scale: [1, 1, 1] };
     const meshGeometry = node.mesh ? geometryFromMeshDocument(node.mesh) : null;
@@ -278,14 +288,20 @@ function bodyGeometryAndColor(body) {
 // editor offset.
 function buildBodyObject(body) {
     const group = new THREE.Group();
-    const { geometry, color, rotation, scale } = bodyGeometryAndColor(body);
-    const material = new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.1 });
+    const { geometry, color, rotation, scale, trueScale } = bodyGeometryAndColor(body);
+    // A part is a CAD mesh: shaded by its faces, not smoothed across its sharp edges, and from both sides, as a mesh
+    // made for a simulator need not turn every face outwards.
+    const material = new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.1, ...(trueScale ? { flatShading: true, side: THREE.DoubleSide } : {}) });
     const shape = new THREE.Group();
     shape.rotation.fromArray(rotation);
     shape.scale.fromArray(scale);
     shape.add(new THREE.Mesh(geometry, material));
     group.add(shape);
-    group.add(new THREE.AxesHelper(0.4));
+    // A part's axes are sized to it: a robot's link is a few centimetres, not the 0.4 of a body drawn to a set size.
+    if (trueScale) {
+        geometry.computeBoundingSphere();
+        group.add(new THREE.AxesHelper(Math.max(geometry.boundingSphere.radius * 0.6, 0.01)));
+    } else group.add(new THREE.AxesHelper(0.4));
     scene.add(group);
     body.material = material;
     return group;
@@ -301,7 +317,7 @@ function rebuildBodyObjects() {
             });
         }
         body.object3D = buildBodyObject(body);
-        if (body.object3D) body.object3D.visible = !hiddenBodyIds.has(body.entityId);
+        if (body.object3D) body.object3D.visible = !hiddenBodyIds.has(body.id);
     });
     applyAllPoses(context?.time ?? 0);
     applySelection(context?.selectedNodeId ?? null);
@@ -338,7 +354,9 @@ function clearEdgeLines() {
 function buildEdgeLines() {
     clearEdgeLines();
     if (!showConnections) return;
-    const bodyByEntityId = new Map(bodies.map((body) => [body.entityId, body]));
+    // A line from a node's own body, or its first one when it holds several.
+    const bodyByEntityId = new Map();
+    for (const body of bodies) if (!bodyByEntityId.has(body.entityId) || !body.prefix) bodyByEntityId.set(body.entityId, body);
     edgesForBodies.forEach((edge) => {
         const sourceBody = bodyByEntityId.get(edge.sourceNodeId);
         const targetBody = bodyByEntityId.get(edge.targetNodeId);
@@ -452,20 +470,20 @@ function renderBodyList() {
         label.style.setProperty('--body-color', body.color);
         label.dataset.entityId = body.entityId;
         const input = element('input', { attributes: { type: 'checkbox', 'aria-label': `Show ${body.entityName}` } });
-        input.checked = !hiddenBodyIds.has(body.entityId);
+        input.checked = !hiddenBodyIds.has(body.id);
         input.addEventListener('change', () => {
-            if (input.checked) hiddenBodyIds.delete(body.entityId);
-            else hiddenBodyIds.add(body.entityId);
+            if (input.checked) hiddenBodyIds.delete(body.id);
+            else hiddenBodyIds.add(body.id);
             if (body.object3D) body.object3D.visible = input.checked;
             refreshEdgeGeometry();
         });
         const name = element('b', {}, [swatch(body.color), body.entityName]);
         const hint = element('small', { text: describeBody(body, signalsById), attributes: { title: sourceLabel(body) } });
         label.append(input, element('span', {}, [name, hint]));
-        const editing = editingEntityId === body.entityId;
+        const editing = editingBodyId === body.id;
         const edit = element('button', { className: 'iconButton', text: editing ? 'Done' : 'Edit', attributes: { type: 'button', 'aria-expanded': String(editing), title: `Choose which states move ${body.entityName}` } });
         edit.addEventListener('click', () => {
-            editingEntityId = editing ? null : body.entityId;
+            editingBodyId = editing ? null : body.id;
             renderBodyList();
         });
         row.append(label, edit);
@@ -476,10 +494,11 @@ function renderBodyList() {
     applySelection(context?.selectedNodeId ?? null);
 }
 
-// The choice kept with the project for one node, made if it has none yet.
-function choiceFor(entityId) {
-    projectData.bodies[entityId] ??= {};
-    return projectData.bodies[entityId];
+// The choice kept with the project for one body (by its id: its node's, with its prefix when it has one), made if it
+// has none yet.
+function choiceFor(id) {
+    projectData.bodies[id] ??= {};
+    return projectData.bodies[id];
 }
 
 // The roles a node would start with for an orientation: whatever its states are named in a convention of that
@@ -510,7 +529,7 @@ function bodyEditor(body) {
         const orientation = normalizeOrientation(turnedBy.value);
         const positions = Object.fromEntries(Object.entries(body.roles).filter(([role]) => ['x', 'y', 'z'].includes(role)));
         const roles = startingRoles(nodeSignals, orientation, positions);
-        const choice = choiceFor(body.entityId);
+        const choice = choiceFor(body.id);
         delete choice.excluded;
         // A node with nothing to map yet keeps its first state as x, so it stays a body while the rest is chosen.
         choice.roles = Object.keys(roles).length ? roles : { x: nodeSignals[0].signalId };
@@ -528,7 +547,7 @@ function bodyEditor(body) {
         select.addEventListener('change', () => {
             const roles = { ...body.roles };
             if (select.value) roles[role] = Number(select.value); else delete roles[role];
-            const choice = choiceFor(body.entityId);
+            const choice = choiceFor(body.id);
             if (Object.keys(roles).length) {
                 choice.roles = roles;
                 if (body.orientation === 'quaternion') choice.orientation = body.orientation; else delete choice.orientation;
@@ -537,7 +556,7 @@ function bodyEditor(body) {
                 // No role left: the node is no longer a body.
                 delete choice.roles;
                 choice.excluded = true;
-                editingEntityId = null;
+                editingBodyId = null;
             }
             saveProjectData();
         });
@@ -547,7 +566,7 @@ function bodyEditor(body) {
             constant.value = String(body.constants[role] ?? 0);
             constant.addEventListener('change', () => {
                 const value = Number(constant.value);
-                const choice = choiceFor(body.entityId);
+                const choice = choiceFor(body.id);
                 choice.constants = { ...choice.constants, [role]: Number.isFinite(value) ? value : 0 };
                 saveProjectData();
             });
@@ -565,18 +584,18 @@ function bodyEditor(body) {
         element('option', { text: 'Angles in degrees', attributes: { value: 'deg' } })
     ]);
     unit?.addEventListener('change', () => {
-        const choice = choiceFor(body.entityId);
+        const choice = choiceFor(body.id);
         if (unit.value) choice.angleUnit = unit.value; else delete choice.angleUnit;
         saveProjectData();
     });
     if (unit) unit.value = body.angleUnit ?? '';
     const actions = element('div', { className: 'editorActions' });
-    const nodeSignalsMatch = matchConvention(nodeSignals, activeConventions(settings));
+    const nodeSignalsMatch = matchConvention(nodeSignals, activeConventions(settings), body.prefix);
     if (body.source.kind === 'mapping' && nodeSignalsMatch) {
         // Back to the convention, which brings its own orientation.
         const reset = element('button', { text: `Use ${nodeSignalsMatch.convention.name} names`, attributes: { type: 'button' } });
         reset.addEventListener('click', () => {
-            const choice = choiceFor(body.entityId);
+            const choice = choiceFor(body.id);
             delete choice.roles;
             delete choice.orientation;
             saveProjectData();
@@ -585,8 +604,8 @@ function bodyEditor(body) {
     }
     const remove = element('button', { text: 'Remove body', attributes: { type: 'button' } });
     remove.addEventListener('click', () => {
-        projectData.bodies[body.entityId] = { excluded: true };
-        editingEntityId = null;
+        projectData.bodies[body.id] = { excluded: true };
+        editingBodyId = null;
         saveProjectData();
     });
     actions.append(remove);
@@ -611,11 +630,11 @@ $('#addBody').addEventListener('change', (event) => {
     const counts = orientations.map(({ orientation }) => ({ orientation, roles: startingRoles(nodeSignals, orientation) }));
     let { orientation, roles } = counts.reduce((best, next) => (Object.keys(next.roles).length > Object.keys(best.roles).length ? next : best));
     if (!Object.keys(roles).length && nodeSignals.length) roles = { x: nodeSignals[0].signalId };
-    const choice = choiceFor(entityId);
+    const choice = choiceFor(String(entityId));
     delete choice.excluded;
     choice.roles = roles;
     if (orientation === 'quaternion') choice.orientation = orientation; else delete choice.orientation;
-    editingEntityId = entityId;
+    editingBodyId = String(entityId);
     saveProjectData();
 });
 
@@ -763,10 +782,10 @@ async function applyConfiguration() {
     disposeBodies();
     bodies = prepared;
     otherNodes = resolved.others;
-    if (!bodies.some((body) => body.entityId === editingEntityId)) editingEntityId = null;
+    if (!bodies.some((body) => body.id === editingBodyId)) editingBodyId = null;
     bodies.forEach((body) => {
         body.object3D = buildBodyObject(body);
-        body.object3D.visible = !hiddenBodyIds.has(body.entityId);
+        body.object3D.visible = !hiddenBodyIds.has(body.id);
     });
     renderBodyList();
     applyAllPoses(context?.time ?? 0);
@@ -796,7 +815,7 @@ async function loadSession() {
     settings = normalizeSettings(storedSettings);
     projectData = normalizeProjectData(stored?.data);
     hiddenBodyIds = new Set();
-    editingEntityId = null;
+    editingBodyId = null;
     nodesById = new Map((context.nodes ?? []).map((node) => [node.id, node]));
     edgesForBodies = context.edges ?? [];
     renderConventions();
@@ -905,7 +924,18 @@ window.__debugPoseVisualizer = {
         const body = bodies.find((candidate) => candidate.entityId === entityId);
         const shape = body?.object3D?.children[0];
         return shape ? { rotation: [shape.rotation.x, shape.rotation.y, shape.rotation.z], scale: [shape.scale.x, shape.scale.y, shape.scale.z] } : null;
-    }
+    },
+    // Every body shown: its id, name, whether it is drawn with its node's part at true scale, the part's vertex count,
+    // and where it is now, in the model's space (z up).
+    bodies: () => bodies.map((body) => {
+        const mesh = body.object3D?.children[0]?.children[0];
+        const position = body.object3D?.position;
+        return {
+            id: body.id, name: body.entityName, part: Boolean(partOf(body)),
+            vertices: mesh?.geometry?.attributes.position?.count ?? 0,
+            position: position ? [position.x, -position.z, position.y] : null
+        };
+    })
 };
 
 loadSession();

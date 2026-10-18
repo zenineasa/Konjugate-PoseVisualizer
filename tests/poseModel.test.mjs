@@ -6,7 +6,7 @@ import test from 'node:test';
 import {
     activeConventions, defaultConvention, describeBody, matchConvention, modelBodyAxes, modelBodyAxesFromQuaternion,
     nearestValue, normalizeConvention, normalizeProjectData, normalizeSettings, poseAt, poseBodyAxes, resolveBodies,
-    rolesFor, suggestedView
+    rolesFor, suggestedView, candidatePrefixes, prefixedSymbol
 } from '../package/poseModel.mjs';
 
 // A result catalogue as listSignals gives it: one entry per state, numbered from 100 by node.
@@ -262,4 +262,42 @@ test('a convention takes the names of its own orientation only, and a quaternion
     assert.equal(normalizeConvention({ id: 'konjugate', name: 'Impostor', orientation: 'quaternion', symbols: { x: 'x' } }), null);
     assert.deepEqual(rolesFor('quaternion').map(({ role }) => role), ['x', 'y', 'z', 'qw', 'qx', 'qy', 'qz']);
     assert.deepEqual(rolesFor('anything else').map(({ role }) => role), ['x', 'y', 'z', 'roll', 'pitch', 'yaw']);
+});
+
+// --- Several bodies on one node ----------------------------------------------------------------------------------
+
+// A robot's mechanism, as the robotics toolbox writes it: one node, each link's pose by its prefix.
+const linkStates = (prefix) => ['X', 'Y', 'Z', 'Qw', 'Qx', 'Qy', 'Qz'].map((part) => `${prefix}${part}`);
+const quaternionNames = normalizeConvention({ id: 'quaternion', name: 'Quaternion', orientation: 'quaternion',
+    symbols: { x: 'x', y: 'y', z: 'z', qw: 'qw', qx: 'qx', qy: 'qy', qz: 'qz' } });
+
+test('one node may hold several bodies, each by a prefix to a convention\'s names', () => {
+    const signals = catalogue({ 1: ['elbowPosition', 'elbowSpeed', ...linkStates('upperArm'), ...linkStates('forearm')], 2: ['x', 'y', 'z', 'roll', 'pitch', 'yaw'] });
+    assert.equal(prefixedSymbol('upperArm', 'qw'), 'upperArmQw');
+    assert.equal(prefixedSymbol('', 'qw'), 'qw');
+    assert.deepEqual(candidatePrefixes(signals.filter(({ entityId }) => entityId === 1), [defaultConvention, quaternionNames]), ['upperArm', 'forearm']);
+    const { bodies, others } = resolveBodies(signals, { conventions: [defaultConvention, quaternionNames] });
+    assert.deepEqual(bodies.map(({ id, entityId, prefix, entityName, orientation }) => [id, entityId, prefix, entityName, orientation]), [
+        ['1:upperArm', 1, 'upperArm', 'Node 1 · upperArm', 'quaternion'],
+        ['1:forearm', 1, 'forearm', 'Node 1 · forearm', 'quaternion'],
+        ['2', 2, '', 'Node 2', 'angles']
+    ]);
+    assert.deepEqual(others, []);
+    // Each by its own states.
+    assert.equal(byId(signals).get(bodies[1].roles.qz).symbol, 'forearmQz');
+});
+
+test('a body on a node with several is kept, hidden or removed by its node and prefix', () => {
+    const signals = catalogue({ 1: [...linkStates('upperArm'), ...linkStates('forearm')] });
+    const projectData = normalizeProjectData({ bodies: { '1:upperArm': { excluded: true }, '1:Forearm': { hidden: true }, '1:forearm': { hidden: true } } });
+    assert.deepEqual(Object.keys(projectData.bodies), ['1:upperArm', '1:forearm'], 'A prefix is a name\'s start, in lower camel case.');
+    const { bodies } = resolveBodies(signals, { conventions: [quaternionNames], projectData });
+    assert.deepEqual(bodies.map(({ id, hidden }) => [id, hidden]), [['1:forearm', true]]);
+});
+
+test('a node whose states hold no whole body under any prefix is one to add', () => {
+    const signals = catalogue({ 1: ['upperArmX', 'upperArmY', 'speedX'] });
+    const { bodies, others } = resolveBodies(signals, { conventions: [quaternionNames] });
+    assert.deepEqual(bodies, []);
+    assert.deepEqual(others.map(({ entityId }) => entityId), [1]);
 });

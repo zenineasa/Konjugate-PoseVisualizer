@@ -12,6 +12,11 @@
 // Which state plays which role comes either from a naming convention (a set of state symbols, one per role it uses)
 // matched against each node's own states, or from a mapping the user made for that one node, kept with the project
 // by signal id.
+//
+// A node may hold several bodies, each by a prefix to the convention's names: a robot's mechanism, with states
+// upperArmX, upperArmY, ... and forearmX, ..., is two bodies, "upperArm" and "forearm", by a convention naming x, y
+// and so on. A body is then known by its node and prefix ("12:upperArm"); a body that is its node's own, with no
+// prefix, by its node alone ("12"), as before.
 
 export const poseRoles = Object.freeze([
     { role: 'x', label: 'X', kind: 'position' },
@@ -103,8 +108,11 @@ export const activeConventions = (settings) => allConventions(settings).filter((
 export function normalizeProjectData(raw) {
     const bodies = {};
     for (const [key, choice] of Object.entries(raw?.bodies ?? {})) {
-        const entityId = Number(key);
+        // A body by its node ("12") or by its node and prefix ("12:upperArm").
+        const [entityText, prefix] = key.split(':');
+        const entityId = Number(entityText);
         if (!Number.isSafeInteger(entityId) || entityId <= 0 || !choice || typeof choice !== 'object') continue;
+        if (prefix !== undefined && !/^[a-z][A-Za-z0-9]*$/.test(prefix)) continue;
         const kept = {};
         const orientation = normalizeOrientation(choice.orientation);
         const usable = roleNamesFor(orientation);
@@ -118,34 +126,56 @@ export function normalizeProjectData(raw) {
         if (choice.angleUnit === 'rad' || choice.angleUnit === 'deg') kept.angleUnit = choice.angleUnit;
         if (choice.hidden === true) kept.hidden = true;
         if (choice.excluded === true && !kept.roles) kept.excluded = true;
-        if (Object.keys(kept).length) bodies[entityId] = kept;
+        if (Object.keys(kept).length) bodies[bodyId(entityId, prefix)] = kept;
     }
     return { version: 1, bodies };
 }
 
 // --- Finding the bodies ---------------------------------------------------------------------------------------
 
-// The roles a convention fills from one node's states, or null when the node lacks any of its symbols.
-function rolesFromConvention(convention, bySymbol) {
+// A convention's name for a state, under a body's prefix: "x" is "upperArmX" under "upperArm", and itself under none.
+export const prefixedSymbol = (prefix, symbol) => (prefix ? `${prefix}${symbol[0].toUpperCase()}${symbol.slice(1)}` : symbol);
+export const bodyId = (entityId, prefix = '') => (prefix ? `${entityId}:${prefix}` : String(entityId));
+
+// The roles a convention fills from one node's states under a prefix, or null when the node lacks any of its symbols.
+function rolesFromConvention(convention, bySymbol, prefix = '') {
     const roles = {};
     for (const [role, symbol] of Object.entries(convention.symbols)) {
-        const signal = bySymbol.get(symbol);
+        const signal = bySymbol.get(prefixedSymbol(prefix, symbol));
         if (!signal) return null;
         roles[role] = signal.signalId;
     }
     return roles;
 }
 
-// The convention a node's states match, preferring the one that fills the most roles (so a node with all six is the
-// 6-DOF body, not the planar one a shorter convention would also find in it).
-export function matchConvention(nodeSignals, conventions) {
+// The convention a node's states match under a prefix, preferring the one that fills the most roles (so a node with all
+// six is the 6-DOF body, not the planar one a shorter convention would also find in it).
+export function matchConvention(nodeSignals, conventions, prefix = '') {
     const bySymbol = new Map(nodeSignals.map((signal) => [signal.symbol, signal]));
     let best = null;
     for (const convention of conventions) {
-        const roles = rolesFromConvention(convention, bySymbol);
+        const roles = rolesFromConvention(convention, bySymbol, prefix);
         if (roles && (!best || Object.keys(roles).length > Object.keys(best.roles).length)) best = { convention, roles };
     }
     return best;
+}
+
+// The prefixes a node's states might hold bodies under, in the order its states come: the start of every state named
+// with one of the conventions' names capitalised at its end ("upperArmX" for "x" gives "upperArm").
+export function candidatePrefixes(nodeSignals, conventions) {
+    const prefixes = [];
+    for (const convention of conventions) {
+        const [first] = Object.values(convention.symbols);
+        if (!first) continue;
+        const ending = prefixedSymbol('a', first).slice(1);
+        for (const { symbol } of nodeSignals) {
+            if (symbol.length > ending.length && symbol.endsWith(ending)) {
+                const prefix = symbol.slice(0, -ending.length);
+                if (/^[a-z][A-Za-z0-9]*$/.test(prefix) && !prefixes.includes(prefix)) prefixes.push(prefix);
+            }
+        }
+    }
+    return prefixes;
 }
 
 // Every node that is a body, in catalogue order, with the signal for each role it has, and every node that isn't
@@ -157,8 +187,24 @@ export function resolveBodies(signals, { conventions = [defaultConvention], proj
     const bodies = [];
     const others = [];
     byEntity.forEach((nodeSignals, entityId) => {
-        const choice = projectData.bodies[entityId] ?? {};
-        const entityName = nodeSignals[0].entityName;
+        const nodeName = nodeSignals[0].entityName;
+        let found = 0;
+        // The node's own body (no prefix), then one for each prefix its states hold a body under.
+        for (const prefix of ['', ...candidatePrefixes(nodeSignals, conventions)]) {
+            const body = resolveBody(nodeSignals, entityId, prefix);
+            if (body) {
+                bodies.push(body);
+                found += 1;
+            }
+        }
+        if (!found) others.push({ entityId, entityName: nodeName });
+    });
+    return { bodies, others };
+
+    function resolveBody(nodeSignals, entityId, prefix) {
+        const id = bodyId(entityId, prefix);
+        const choice = projectData.bodies[id] ?? {};
+        const entityName = prefix ? `${nodeSignals[0].entityName} · ${prefix}` : nodeSignals[0].entityName;
         let roles = null;
         let source = null;
         let orientation = 'angles';
@@ -170,25 +216,21 @@ export function resolveBodies(signals, { conventions = [defaultConvention], proj
             } else roles = null;
         }
         if (!roles && !choice.excluded) {
-            const match = matchConvention(nodeSignals, conventions);
+            const match = matchConvention(nodeSignals, conventions, prefix);
             if (match) {
                 roles = match.roles;
                 orientation = normalizeOrientation(match.convention.orientation);
                 source = { kind: 'convention', conventionId: match.convention.id, conventionName: match.convention.name };
             }
         }
-        if (!roles) {
-            others.push({ entityId, entityName });
-            return;
-        }
+        if (!roles) return null;
         const angleUnits = {};
         for (const [role, signalId] of Object.entries(roles)) {
             if (isAngle(role)) angleUnits[role] = choice.angleUnit ?? (isDegreeUnit(signalsById.get(signalId).unit) ? 'deg' : 'rad');
         }
         const constants = Object.fromEntries(Object.entries(choice.constants ?? {}).filter(([role]) => !(role in roles)));
-        bodies.push({ entityId, entityName, roles, orientation, constants, angleUnit: choice.angleUnit ?? null, angleUnits, hidden: Boolean(choice.hidden), source });
-    });
-    return { bodies, others };
+        return { id, entityId, prefix, entityName, roles, orientation, constants, angleUnit: choice.angleUnit ?? null, angleUnits, hidden: Boolean(choice.hidden), source };
+    }
 }
 
 // --- Where a body is ------------------------------------------------------------------------------------------
