@@ -6,7 +6,7 @@ import test from 'node:test';
 import * as THREE from '../package/vendor/three.module.js';
 import {
     activeFace, faceDirections, fitOrbit, interpolateOrbit, maximumRadius, minimumPolar, minimumRadius,
-    orbitAnglesFor, panOffset, panStepPixels, zoomedRadius
+    orbitAnglesFor, panOffset, panStepPixels, startingOrbit, zoomedRadius
 } from '../package/viewCamera.mjs';
 
 // Where updateCameraFromOrbit (viewer.mjs) puts the camera for these angles, as a unit direction from the target.
@@ -114,4 +114,22 @@ test('the page has every control the view cube needs, wired to the code, and no 
     // The page's CSP is style-src 'self': a style attribute in the markup would be refused.
     assert.ok(!/\sstyle=/.test(html));
     assert.ok(css.includes('.viewCube {') && css.includes('--accent'));
+});
+
+test('the first view frames the bodies, a machine metres long as much as a planar mechanism, and turns only for one in a plane', () => {
+    const current = { azimuth: 0.6, polar: 1.1, radius: 7.8, target: new THREE.Vector3(0, 0, 0) };
+    // An excavator's parts at their true size: the boom alone reaches 6 m from the cab.
+    const machine = new THREE.Box3(new THREE.Vector3(-2.2, -1.25, 0), new THREE.Vector3(7.5, 1.25, 6));
+    const fit = fitOrbit(machine, 50, 1.5);
+    const free = startingOrbit({ current, fit });
+    assert.deepEqual([free.azimuth, free.polar], [current.azimuth, current.polar], 'A body moving in 3D keeps the view\'s turn.');
+    assert.equal(free.radius, fit.radius);
+    assert.ok(free.radius > current.radius, 'The machine is framed from further away than the default view.');
+    assert.ok(free.target.distanceTo(machine.getCenter(new THREE.Vector3())) < 1e-9);
+    const front = orbitAnglesFor(faceDirections.front);
+    const planar = startingOrbit({ current, fit, angles: front });
+    assert.deepEqual([planar.azimuth, planar.polar, planar.radius], [front.azimuth, front.polar, fit.radius]);
+    const nothing = startingOrbit({ current, fit: null });
+    assert.equal(nothing.radius, current.radius);
+    assert.notEqual(nothing.target, current.target, 'The current target is copied, not shared.');
 });

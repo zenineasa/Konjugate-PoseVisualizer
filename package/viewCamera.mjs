@@ -61,6 +61,14 @@ export function fitOrbit(bounds, verticalFovDegrees, aspect) {
     return { target: sphere.center.clone(), radius: clampRadius(sphere.radius / Math.sin(limiting / 2) * 1.15) };
 }
 
+// Where the first view of a result goes: framing the bodies (`fit`, from fitOrbit), whatever their size, and turned square on to the
+// plane they move in when they move in one (`angles`, from orbitAnglesFor; null keeps the current turn). Bodies drawn at their true
+// size (a machine's parts, metres long) need the framing as much as a planar mechanism needs the turn.
+export function startingOrbit({ current, fit, angles = null }) {
+    const turn = angles ?? { azimuth: current.azimuth, polar: current.polar };
+    return { azimuth: turn.azimuth, polar: turn.polar, radius: fit?.radius ?? current.radius, target: fit?.target ?? current.target.clone() };
+}
+
 // How far one pan-pad press moves the target: a fixed number of screen pixels, converted to scene
 // units at the target's distance, along the camera's own right and up directions.
 export function panOffset({ direction, radius, verticalFovDegrees, viewportHeight, right, up }) {

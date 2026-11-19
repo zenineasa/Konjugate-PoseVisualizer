@@ -12,7 +12,7 @@ By default a node whose states are named `x`, `y`, `z`, `roll`, `pitch` and `yaw
 - **Several bodies on one node.** A node may hold several bodies, each by a prefix to a convention's names: a robot's mechanism with states `upperArmX`, `upperArmY`, ... and `forearmX`, ... is two bodies, *upperArm* and *forearm*, found by a convention naming `x`, `y` and so on. Each is shown, hidden, edited or removed on its own, and kept with the project by its node and prefix. When the node's appearance has a part of that prefix (a mesh in metres, in the body's frame; the Robotics Toolbox gives each of a robot's links one), the body is drawn with it at its true size, shaded by its faces.
 - **Angles** are read as radians, or as degrees when a state's unit is `deg`, `degree`, `degrees` or `°`. A body can be set to radians or degrees regardless.
 
-A role left out stays still at its constant, 0 unless you set another. When every body moves in a single plane, the view starts square on to that plane.
+A role left out stays still at its constant, 0 unless you set another. The first view frames the bodies shown, whatever their size, and when every body moves in a single plane, starts square on to that plane.
 
 This version needs a Konjugate that lets result visualizers keep data with the project and settings for the user (the manifest's `requires`: `projectData`, `addonSettings`); an older Konjugate refuses to install it.
 

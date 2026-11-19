@@ -2,7 +2,7 @@
 
 import * as THREE from './vendor/three.module.js';
 import {
-    activeFace, faceDirections, fitOrbit, interpolateOrbit, orbitAnglesFor, panOffset, transitionMilliseconds, zoomedRadius
+    activeFace, faceDirections, fitOrbit, interpolateOrbit, orbitAnglesFor, panOffset, startingOrbit, transitionMilliseconds, zoomedRadius
 } from './viewCamera.mjs';
 import {
     activeConventions, allConventions, describeBody, hasQuaternion, matchConvention, normalizeConvention, normalizeOrientation,
@@ -792,14 +792,13 @@ async function applyConfiguration() {
     buildEdgeLines();
 }
 
-// The first scene this window shows starts square on to the plane its bodies move in, when they move in only one.
+// The first scene this window shows frames its bodies, and starts square on to the plane they move in when they move in only one.
 function suggestStartingView() {
     if (viewSuggested || !bodies.length) return;
     viewSuggested = true;
     const face = suggestedView(bodies);
-    if (!face) return;
     const fit = fitOrbit(bodyBounds(), camera.fov, camera.aspect);
-    animateOrbitTo({ ...orbitAnglesFor(faceDirections[face]), radius: fit?.radius ?? orbit.radius, target: fit?.target ?? orbit.target.clone() });
+    animateOrbitTo(startingOrbit({ current: orbit, fit, angles: face ? orbitAnglesFor(faceDirections[face]) : null }));
 }
 
 async function loadSession() {
